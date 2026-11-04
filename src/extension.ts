@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { acceptHunk, computeDiff, rejectHunk, type FileDiff, type Hunk } from './hunks';
-import { copyHookScript, isProjectSetUp, readBase, readEntries, removeEntry, setUpProject, writeBase, type Entry } from './store';
+import { copyHookScript, isProjectSetUp, readBase, readEntries, recordOutcome, removeEntry, setUpProject, writeBase, type Entry } from './store';
 
 const BASE_SCHEME = 'claude-inline-diff-base';
 const DONT_ASK_KEY = 'claudeInlineDiff.dontAskSetup';
@@ -377,6 +377,7 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 			return;
 		}
 		const base = acceptHunk(review.diff, hunk.index);
+		recordOutcome(review.entry, 1, 0);
 		if (base === review.current) {
 			removeEntry(review.entry);
 		} else {
@@ -393,6 +394,7 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 			return;
 		}
 		const current = rejectHunk(review.diff, hunk.index);
+		recordOutcome(review.entry, 0, 1);
 		if (current === review.base && !review.entry.existed) {
 			await this.deleteFile(review.entry.absPath);
 		} else {
@@ -407,9 +409,18 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 	async acceptFile(uriArg?: unknown): Promise<void> {
 		const entry = this.entries.get(this.target(uriArg) ?? '');
 		if (entry) {
-			removeEntry(entry);
+			this.finishAccepted(entry);
 			this.refresh();
 		}
+	}
+
+	private pendingHunks(entry: Entry): number {
+		return this.review(entry.absPath)?.diff.hunks.length ?? 0;
+	}
+
+	private finishAccepted(entry: Entry): void {
+		recordOutcome(entry, this.pendingHunks(entry), 0);
+		removeEntry(entry);
 	}
 
 	async rejectFile(uriArg?: unknown, confirm = true): Promise<void> {
@@ -428,6 +439,7 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 			vscode.window.showWarningMessage(`The copy of ${entry.key} from before Claude's edit is missing, so it can't be restored.`);
 			return;
 		}
+		recordOutcome(entry, 0, this.pendingHunks(entry));
 		if (entry.existed) {
 			await this.writeCurrent(entry.absPath, base);
 		} else {
@@ -438,7 +450,7 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 	}
 
 	async acceptAll(): Promise<void> {
-		[...this.entries.values()].forEach(removeEntry);
+		[...this.entries.values()].forEach(e => this.finishAccepted(e));
 		this.refresh();
 	}
 

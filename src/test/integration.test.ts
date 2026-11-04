@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
@@ -33,12 +34,34 @@ suite('editor integration', () => {
 	const hook = path.resolve(__dirname, '..', '..', 'hooks', 'snapshot.js');
 
 	// What Claude Code does for an Edit: run the PreToolUse hook, then write the file.
-	function claudeEdits(file: string, text: string) {
-		execFileSync('node', [hook], { input: JSON.stringify({ cwd: root, tool_name: 'Edit', tool_input: { file_path: file } }) });
+	function claudeEdits(file: string, text: string, sessionId = 'other-chat') {
+		execFileSync('node', [hook], {
+			input: JSON.stringify({ hook_event_name: 'PreToolUse', session_id: sessionId, cwd: root, tool_name: 'Edit', tool_input: { file_path: file } }),
+		});
 		fs.writeFileSync(file, text);
 	}
 
+	// What Claude Code does when it finishes a reply: run the Stop hook. Returns the message it shows.
+	function claudeStops(sessionId: string): string | undefined {
+		const out = execFileSync('node', [hook], { input: JSON.stringify({ hook_event_name: 'Stop', session_id: sessionId, cwd: root }) }).toString();
+		return out ? JSON.parse(out).systemMessage : undefined;
+	}
+
+	async function openWithChanges(file: string): Promise<{ doc: vscode.TextDocument; lenses: vscode.CodeLens[] }> {
+		const doc = await vscode.workspace.openTextDocument(file);
+		await vscode.window.showTextDocument(doc);
+		const lenses = await waitFor('Accept/Reject buttons', async () => {
+			const found = await changeLenses(doc.uri);
+			return found.length > 0 ? found : undefined;
+		});
+		return { doc, lenses };
+	}
+
+	const accept = (lenses: vscode.CodeLens[]) => lenses.find(l => l.command!.command === 'claudeInlineDiff.acceptHunk')!;
+	const reject = (lenses: vscode.CodeLens[]) => lenses.find(l => l.command!.command === 'claudeInlineDiff.rejectHunk')!;
+
 	suiteSetup(async () => {
+		assert.notStrictEqual(os.homedir(), process.env.REAL_HOME, 'tests must not use the real home folder');
 		await vscode.extensions.getExtension('jaafar-shiha.claude-inline-diff')!.activate();
 	});
 
@@ -98,5 +121,60 @@ suite('editor integration', () => {
 			return found.length > 0 ? found : undefined;
 		});
 		assert.deepStrictEqual(lenses.map(l => l.range.start.line), [1, 1]);
+	});
+
+	test('at the end of a reply, the chat lists its edited files as pending, then accepted or rejected', async () => {
+		const chat = 'chat-summary';
+		const kept = path.join(root, 'lib', 'kept.dart');
+		const undone = path.join(root, 'lib', 'undone.dart');
+		fs.writeFileSync(kept, 'one\n');
+		fs.writeFileSync(undone, 'two\n');
+		claudeEdits(kept, 'one\nmore\n', chat);
+		claudeEdits(undone, 'TWO\n', chat);
+
+		assert.strictEqual(claudeStops(chat), [
+			'Claude Inline Diff: 2 files edited in this chat',
+			'⏳ lib/kept.dart (waiting for review)',
+			'⏳ lib/undone.dart (waiting for review)',
+			'2 files still to review in VS Code.',
+		].join('\n'));
+
+		await run(accept((await openWithChanges(kept)).lenses));
+		await run(reject((await openWithChanges(undone)).lenses));
+
+		// The user's next message: Claude replies without editing anything.
+		assert.strictEqual(claudeStops(chat), undefined, 'nothing new and nothing pending: stay quiet');
+		claudeEdits(path.join(root, 'lib', 'third.dart'), 'x\n', chat);
+		assert.strictEqual(claudeStops(chat), [
+			'Claude Inline Diff: 3 files edited in this chat',
+			'⏳ lib/third.dart (waiting for review)',
+			'❌ lib/undone.dart (rejected)',
+			'✅ lib/kept.dart (accepted)',
+			'1 file still to review in VS Code.',
+		].join('\n'));
+	});
+
+	test('a file with some changes accepted and some rejected is listed as partly accepted', async () => {
+		const chat = 'chat-partial';
+		const file = path.join(root, 'lib', 'partial.dart');
+		fs.writeFileSync(file, 'a\nb\nc\nd\ne\n');
+		claudeEdits(file, 'A\nb\nc\nd\nE\n', chat);
+
+		const first = await openWithChanges(file);
+		await run(accept(first.lenses));
+		await run(reject(await changeLenses(first.doc.uri)));
+
+		assert.strictEqual(claudeStops(chat), [
+			'Claude Inline Diff: 1 file edited in this chat',
+			'✅❌ lib/partial.dart (partly accepted: 1 kept, 1 undone)',
+		].join('\n'));
+	});
+
+	test('a chat that only edits files outside set-up projects shows nothing', () => {
+		const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-inline-diff-outside-'));
+		const file = path.join(outside, 'x.txt');
+		fs.writeFileSync(file, 'x\n');
+		claudeEdits(file, 'y\n', 'chat-outside');
+		assert.strictEqual(claudeStops('chat-outside'), undefined);
 	});
 });

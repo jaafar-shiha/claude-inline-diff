@@ -18,6 +18,15 @@ The extension works with every Claude Code session on your machine: the VS Code 
 - **Inline highlighting.** Added lines get a green background. Removed lines are shown as red struck-through text, and hovering shows the full removed code.
 - **Per-change review.** `✓ Accept` / `✗ Reject` buttons sit directly above each changed block. Accept keeps Claude's version; Reject restores your original lines in place.
 - **File-level actions.** **Accept All**, **Reject All** and **Compare** (side-by-side diff against the pre-Claude version) at the top of every changed file.
+- **End-of-reply checklist.** When Claude finishes a reply, the chat lists every file it edited in that conversation, so nothing slips through:
+  ```
+  Claude Inline Diff: 3 files edited in this chat
+  ⏳ lib/home_screen.dart (waiting for review)
+  ❌ lib/api_client.dart (rejected)
+  ✅ lib/main_screen.dart (accepted)
+  1 file still to review in VS Code.
+  ```
+  A file whose changes you partly kept and partly undid shows as `✅❌ partly accepted`.
 - **Review queue.** A **Claude Changes** view in the Explorer and a status bar counter list every file waiting for review.
 - **Keyboard-first.** Accept or reject the change under the cursor without touching the mouse.
 - **Safe by design.** Rejecting a file that Claude created moves it to the trash rather than deleting it permanently, and destructive bulk actions ask for confirmation.
@@ -34,6 +43,9 @@ flowchart LR
     E -->|diff + hunks| F[Decorations<br/>CodeLens buttons<br/>Review view]
     F -->|Accept| C
     F -->|Reject| D
+    F -->|outcome| C
+    G[Claude Code<br/>reply finished] -->|Stop hook| H[Summary in chat:<br/>⏳ / ✅ / ❌ per file]
+    C --> H
 ```
 
 1. **Capture.** A Claude Code [`PreToolUse` hook](https://docs.claude.com/en/docs/claude-code/hooks) runs right before Claude's file tools (`Edit`, `Write`, `MultiEdit`). The first time Claude touches a file, the hook saves a snapshot of it and records the file in a manifest. The hook always exits successfully, so it can never block Claude.
@@ -42,6 +54,9 @@ flowchart LR
    - **Accepting** a hunk folds it into the snapshot, so that hunk becomes the new baseline.
    - **Rejecting** a hunk writes the original lines back into the file.
    - When the snapshot and the file match again, the file leaves the review queue.
+4. **Summarize.** The same hook also runs on Claude Code's `Stop` event, when Claude finishes a reply.
+   - It reads which files this chat edited, plus each file's review outcome, and returns the list as a message. Claude Code shows that message at the end of the reply.
+   - It stays quiet after replies that edited nothing and left nothing to review.
 
 The two sides share no process. They talk only through files in `<project>/.claude/inline-diff/`, which is git-ignored automatically. That is why edits from any Claude Code client show up in VS Code.
 
@@ -71,7 +86,7 @@ Then install the generated `claude-inline-diff-<version>.vsix` as above.
 3. Ask Claude to change something. The file opens with the changes highlighted and ready for review.
 
 Setup does two things:
-- It registers the hook once in `~/.claude/settings.json`, so every Claude Code client uses it.
+- It registers the hook once in `~/.claude/settings.json`, for `PreToolUse` (file edits) and `Stop` (end of reply), so every Claude Code client uses it.
 - It creates `.claude/inline-diff/` in the project. Only projects with this folder are tracked.
 
 > **Tip:** For the full Cursor-like flow, set Claude Code's permission mode to **Edit automatically** (`acceptEdits`). Claude then applies edits directly, and you review them afterwards in the file instead of approving each one up front.
@@ -103,7 +118,8 @@ Shortcuts are active only while the focused file has pending changes.
 ## Project structure
 
 ```
-hooks/snapshot.js      Claude Code PreToolUse hook: snapshots files before the first edit
+hooks/snapshot.js      Claude Code hook: snapshots files before the first edit (PreToolUse)
+                       and lists edited files with their status when a reply ends (Stop)
 src/extension.ts       VS Code integration: decorations, CodeLens, tree view, commands
 src/hunks.ts           Pure diff/hunk logic: compute, accept, reject
 src/store.ts           On-disk state, hook installation and migrations
@@ -132,6 +148,7 @@ npm test
 
 - VS Code's API can't insert virtual lines into an editor, so removed code is shown as a one-line red hint with a hover, not as full red lines. **Compare** opens a classic side-by-side diff when you need the full picture.
 - Only changes made through Claude's file-editing tools are tracked. Changes made through shell commands (for example `sed` or `rm`) are not.
+- The end-of-reply list reflects the moment Claude finishes. Files edited in that reply are always ⏳ at first; once you review them, the next reply shows them as ✅ or ❌.
 - Edits you make yourself to a file under review appear as part of the pending changes until you accept or reject them.
 
 ## Roadmap

@@ -3,6 +3,15 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-11-04
+
+### Added
+- **End-of-reply checklist in the Claude chat.** When Claude finishes a reply, the chat lists every file it edited in that conversation: ⏳ waiting for review, ✅ accepted, ❌ rejected, or ✅❌ partly accepted. It works through a Claude Code `Stop` hook, so it appears in the VS Code panel, the terminal and the desktop app.
+- Accept and Reject outcomes are recorded per file in `.claude/inline-diff/history.json`.
+
+### Changed
+- Integration tests run VS Code with a throwaway home folder, so they never touch the real `~/.claude/settings.json`.
+
 ## [0.5.0] - 2026-11-03
 
 ### Changed
@@ -35,4 +44,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - First version: a `PreToolUse` hook snapshots files before Claude edits them, and the extension shows added and removed lines with per-change Accept/Reject.
 
+[0.6.0]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jaafar-shiha/claude-inline-diff/releases/tag/v0.5.0

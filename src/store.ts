@@ -6,6 +6,8 @@ import * as path from 'path';
 //   manifest.json           { "<relative path>": { existed, time } } for every file Claude touched
 //   snapshots/<rel path>.snapshot   the file as it was before Claude's first edit
 //                           (the suffix keeps Gradle, the Dart analyzer etc. from treating it as source)
+//   history.json            { "<relative path>": { accepted, rejected, time } }: how each file's
+//                           last review went, counted in changes; the hook's end-of-reply summary reads it
 // The folder itself marks the project as set up for review.
 //
 // The hook script is installed once for the user, so it runs for every Claude Code session
@@ -20,6 +22,12 @@ export interface Entry {
 	key: string;
 	absPath: string;
 	existed: boolean;
+}
+
+interface Outcome {
+	accepted: number;
+	rejected: number;
+	time: number;
 }
 
 interface ManifestRecord {
@@ -47,20 +55,47 @@ function legacySnapshotPath(entry: Entry): string {
 	return path.join(snapshotsDir(entry.root), ...entry.key.split('/'));
 }
 
-function readManifest(root: string): Record<string, ManifestRecord> {
+function historyPath(root: string): string {
+	return path.join(stateDir(root), 'history.json');
+}
+
+function readState<T>(file: string): Record<string, T> {
 	try {
-		return JSON.parse(fs.readFileSync(manifestPath(root), 'utf8'));
+		return JSON.parse(fs.readFileSync(file, 'utf8'));
 	} catch {
 		return {};
 	}
 }
 
-function writeManifest(root: string, manifest: Record<string, ManifestRecord>): void {
-	const file = manifestPath(root);
+function writeState(file: string, value: unknown): void {
 	const tmp = `${file}.${process.pid}.tmp`;
 	fs.mkdirSync(path.dirname(file), { recursive: true });
-	fs.writeFileSync(tmp, JSON.stringify(manifest, null, 2));
+	fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
 	fs.renameSync(tmp, file);
+}
+
+function readManifest(root: string): Record<string, ManifestRecord> {
+	return readState(manifestPath(root));
+}
+
+function writeManifest(root: string, manifest: Record<string, ManifestRecord>): void {
+	writeState(manifestPath(root), manifest);
+}
+
+// Counts accepted and rejected changes, for the summary at the end of each Claude reply.
+export function recordOutcome(entry: Entry, accepted: number, rejected: number): void {
+	if (accepted + rejected === 0) {
+		return;
+	}
+	const file = historyPath(entry.root);
+	const history = readState<Outcome>(file);
+	const last = history[entry.key];
+	history[entry.key] = {
+		accepted: (last?.accepted ?? 0) + accepted,
+		rejected: (last?.rejected ?? 0) + rejected,
+		time: Date.now(),
+	};
+	writeState(file, history);
 }
 
 export function readEntries(root: string): Entry[] {
@@ -159,7 +194,8 @@ export function copyHookScript(bundledScript: string): void {
 	}
 }
 
-// Registers the PreToolUse hook in ~/.claude/settings.json, once for all projects.
+// Registers the hook in ~/.claude/settings.json, once for all projects: before Claude's file edits
+// (snapshots) and when Claude finishes a reply (the summary of edited files).
 function installGlobalHook(bundledScript: string): void {
 	fs.mkdirSync(path.dirname(globalScriptPath()), { recursive: true });
 	fs.copyFileSync(bundledScript, globalScriptPath());
@@ -167,15 +203,21 @@ function installGlobalHook(bundledScript: string): void {
 	const file = path.join(claudeDir(), 'settings.json');
 	const settings = readJson(file);
 	settings.hooks ??= {};
-	settings.hooks.PreToolUse ??= [];
-	if (JSON.stringify(settings.hooks.PreToolUse).includes(HOOK_FILE)) {
-		return;
+	const command = { type: 'command', command: `node ${JSON.stringify(globalScriptPath())}` };
+	let changed = false;
+	for (const [event, group] of [
+		['PreToolUse', { matcher: 'Edit|Write|MultiEdit', hooks: [command] }],
+		['Stop', { hooks: [command] }],
+	] as const) {
+		settings.hooks[event] ??= [];
+		if (!JSON.stringify(settings.hooks[event]).includes(HOOK_FILE)) {
+			settings.hooks[event].push(group);
+			changed = true;
+		}
 	}
-	settings.hooks.PreToolUse.push({
-		matcher: 'Edit|Write|MultiEdit',
-		hooks: [{ type: 'command', command: `node ${JSON.stringify(globalScriptPath())}` }],
-	});
-	writeJson(file, settings);
+	if (changed) {
+		writeJson(file, settings);
+	}
 }
 
 // Removes the per-project hook older versions added, so edits aren't snapshotted twice.
