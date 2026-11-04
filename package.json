@@ -1,0 +1,260 @@
+{
+  "name": "claude-inline-diff",
+  "displayName": "Claude Inline Diff",
+  "description": "Review Claude Code's edits inline, Cursor-style: green added lines, red removed lines, Accept/Reject per change.",
+  "version": "0.5.0",
+  "publisher": "jaafar-shiha",
+  "author": {
+    "name": "Jaafar Shiha",
+    "url": "https://github.com/jaafar-shiha"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jaafar-shiha/claude-inline-diff.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jaafar-shiha/claude-inline-diff/issues"
+  },
+  "homepage": "https://github.com/jaafar-shiha/claude-inline-diff#readme",
+  "keywords": [
+    "claude",
+    "claude code",
+    "ai",
+    "diff",
+    "code review",
+    "inline diff",
+    "cursor"
+  ],
+  "engines": {
+    "vscode": "^1.144.0"
+  },
+  "categories": [
+    "Other",
+    "SCM Providers"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeInlineDiff.setUpHook",
+        "title": "Set Up for This Workspace",
+        "category": "Claude Diff"
+      },
+      {
+        "command": "claudeInlineDiff.acceptHunk",
+        "title": "Accept Change",
+        "category": "Claude Diff"
+      },
+      {
+        "command": "claudeInlineDiff.rejectHunk",
+        "title": "Reject Change",
+        "category": "Claude Diff"
+      },
+      {
+        "command": "claudeInlineDiff.acceptHunkAtCursor",
+        "title": "Accept Change at Cursor",
+        "category": "Claude Diff"
+      },
+      {
+        "command": "claudeInlineDiff.rejectHunkAtCursor",
+        "title": "Reject Change at Cursor",
+        "category": "Claude Diff"
+      },
+      {
+        "command": "claudeInlineDiff.acceptFile",
+        "title": "Accept All Changes in File",
+        "category": "Claude Diff",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "claudeInlineDiff.rejectFile",
+        "title": "Reject All Changes in File",
+        "category": "Claude Diff",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "claudeInlineDiff.acceptAll",
+        "title": "Accept All Changes in All Files",
+        "category": "Claude Diff",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "claudeInlineDiff.rejectAll",
+        "title": "Reject All Changes in All Files",
+        "category": "Claude Diff",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "claudeInlineDiff.compareFile",
+        "title": "Compare with Version Before Claude",
+        "category": "Claude Diff",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "claudeInlineDiff.openFile",
+        "title": "Open Changed File",
+        "category": "Claude Diff"
+      },
+      {
+        "command": "claudeInlineDiff.openNextFile",
+        "title": "Open Next Changed File",
+        "category": "Claude Diff",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "claudeInlineDiff.refresh",
+        "title": "Refresh",
+        "category": "Claude Diff",
+        "icon": "$(refresh)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "claudeInlineDiff.acceptHunkAtCursor",
+        "key": "ctrl+alt+y",
+        "mac": "cmd+alt+y",
+        "when": "editorTextFocus && claudeInlineDiff.activeHasChanges"
+      },
+      {
+        "command": "claudeInlineDiff.rejectHunkAtCursor",
+        "key": "ctrl+alt+n",
+        "mac": "cmd+alt+n",
+        "when": "editorTextFocus && claudeInlineDiff.activeHasChanges"
+      },
+      {
+        "command": "claudeInlineDiff.acceptFile",
+        "key": "ctrl+alt+enter",
+        "mac": "cmd+alt+enter",
+        "when": "editorTextFocus && claudeInlineDiff.activeHasChanges"
+      },
+      {
+        "command": "claudeInlineDiff.rejectFile",
+        "key": "ctrl+alt+backspace",
+        "mac": "cmd+alt+backspace",
+        "when": "editorTextFocus && claudeInlineDiff.activeHasChanges"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "claudeInlineDiff.changes",
+          "name": "Claude Changes"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "claudeInlineDiff.changes",
+        "contents": "No changes from Claude to review.\nFiles Claude edits show up here after this workspace is set up.\n[Set Up for This Workspace](command:claudeInlineDiff.setUpHook)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "claudeInlineDiff.acceptHunk",
+          "when": "false"
+        },
+        {
+          "command": "claudeInlineDiff.rejectHunk",
+          "when": "false"
+        },
+        {
+          "command": "claudeInlineDiff.openFile",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "claudeInlineDiff.acceptAll",
+          "when": "view == claudeInlineDiff.changes",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeInlineDiff.rejectAll",
+          "when": "view == claudeInlineDiff.changes",
+          "group": "navigation@2"
+        },
+        {
+          "command": "claudeInlineDiff.refresh",
+          "when": "view == claudeInlineDiff.changes",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "claudeInlineDiff.compareFile",
+          "when": "view == claudeInlineDiff.changes && viewItem == claudeChangedFile",
+          "group": "inline@1"
+        },
+        {
+          "command": "claudeInlineDiff.acceptFile",
+          "when": "view == claudeInlineDiff.changes && viewItem == claudeChangedFile",
+          "group": "inline@2"
+        },
+        {
+          "command": "claudeInlineDiff.rejectFile",
+          "when": "view == claudeInlineDiff.changes && viewItem == claudeChangedFile",
+          "group": "inline@3"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "claudeInlineDiff.acceptFile",
+          "when": "claudeInlineDiff.activeHasChanges",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeInlineDiff.rejectFile",
+          "when": "claudeInlineDiff.activeHasChanges",
+          "group": "navigation@2"
+        },
+        {
+          "command": "claudeInlineDiff.openNextFile",
+          "when": "claudeInlineDiff.activeHasChanges",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Claude Inline Diff",
+      "properties": {
+        "claudeInlineDiff.autoOpenFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open each file in an editor tab as soon as Claude starts editing it."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "@types/vscode": "^1.144.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "^3.9.2",
+    "eslint": "^10.5.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  },
+  "dependencies": {
+    "diff": "^8.0.4"
+  }
+}
