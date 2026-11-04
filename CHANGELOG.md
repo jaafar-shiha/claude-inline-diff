@@ -3,6 +3,17 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-11-04
+
+### Added
+- **Red/green inline view.** Files Claude changed open in VS Code's inline diff view: removed lines show in red with their old line numbers, and added lines in green, with Accept/Reject buttons above each change. When nothing is left to review, the view switches back to the normal editor.
+- Setting `claudeInlineDiff.openIn` (`diff` or `editor`) chooses where files open.
+- **Review in Inline Diff View** button in the editor title bar.
+
+### Changed
+- The extension makes diff views inline and turns on their CodeLens by default (`diffEditor.renderSideBySide: false`, `diffEditor.codeLens: true`). Values you set yourself still win.
+- The **Compare** action is now called **Diff View**.
+
 ## [0.6.0] - 2026-11-04
 
 ### Added
@@ -44,5 +55,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - First version: a `PreToolUse` hook snapshots files before Claude edits them, and the extension shows added and removed lines with per-change Accept/Reject.
 
+[0.7.0]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jaafar-shiha/claude-inline-diff/releases/tag/v0.5.0

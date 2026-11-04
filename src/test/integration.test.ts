@@ -177,4 +177,32 @@ suite('editor integration', () => {
 		claudeEdits(file, 'y\n', 'chat-outside');
 		assert.strictEqual(claudeStops('chat-outside'), undefined);
 	});
+
+	test('a file Claude edits opens in the inline diff view, which gives way to the normal editor once reviewed', async () => {
+		assert.strictEqual(vscode.workspace.getConfiguration('diffEditor').get('renderSideBySide'), false);
+		assert.strictEqual(vscode.workspace.getConfiguration('diffEditor').get('codeLens'), true);
+
+		const file = path.join(root, 'lib', 'sheet.dart');
+		fs.writeFileSync(file, 'return SizedBox(\n  child: x,\n);\n');
+		claudeEdits(file, 'return DraggableScrollableSheet(\n  child: x,\n);\n');
+
+		const diffTab = () => vscode.window.tabGroups.all.flatMap(g => g.tabs).find(t =>
+			t.input instanceof vscode.TabInputTextDiff && t.input.modified.fsPath === file);
+		const tab = await waitFor('the diff view', diffTab);
+		const input = tab.input as vscode.TabInputTextDiff;
+		assert.strictEqual(input.original.scheme, 'claude-inline-diff-base');
+		assert.strictEqual((await vscode.workspace.openTextDocument(input.original)).getText(), 'return SizedBox(\n  child: x,\n);\n');
+
+		// The buttons are on the real file, which is the diff's right side.
+		const lenses = await waitFor('Accept/Reject buttons', async () => {
+			const found = await changeLenses(input.modified);
+			return found.length > 0 ? found : undefined;
+		});
+		await run(accept(lenses));
+
+		await waitFor('the diff view to close', () => (diffTab() ? undefined : true));
+		assert.ok(vscode.window.tabGroups.all.flatMap(g => g.tabs).some(t =>
+			t.input instanceof vscode.TabInputText && t.input.uri.fsPath === file), 'the file is open in a normal editor');
+		assert.ok(fs.readFileSync(file, 'utf8').includes('DraggableScrollableSheet'));
+	});
 });

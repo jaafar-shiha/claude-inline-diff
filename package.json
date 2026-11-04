@@ -2,7 +2,7 @@
   "name": "claude-inline-diff",
   "displayName": "Claude Inline Diff",
   "description": "Review Claude Code's edits inline, Cursor-style: green added lines, red removed lines, Accept/Reject per change.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "publisher": "jaafar-shiha",
   "author": {
     "name": "Jaafar Shiha",
@@ -90,7 +90,7 @@
       },
       {
         "command": "claudeInlineDiff.compareFile",
-        "title": "Compare with Version Before Claude",
+        "title": "Review in Inline Diff View",
         "category": "Claude Diff",
         "icon": "$(diff)"
       },
@@ -216,6 +216,11 @@
           "command": "claudeInlineDiff.openNextFile",
           "when": "claudeInlineDiff.activeHasChanges",
           "group": "navigation@3"
+        },
+        {
+          "command": "claudeInlineDiff.compareFile",
+          "when": "claudeInlineDiff.activeHasChanges && !isInDiffEditor",
+          "group": "navigation@0"
         }
       ]
     },
@@ -226,8 +231,25 @@
           "type": "boolean",
           "default": true,
           "description": "Open each file in an editor tab as soon as Claude starts editing it."
+        },
+        "claudeInlineDiff.openIn": {
+          "type": "string",
+          "enum": [
+            "diff",
+            "editor"
+          ],
+          "enumDescriptions": [
+            "An inline diff view: removed lines in red, added lines in green, with Accept/Reject above each change.",
+            "The normal editor: added lines in green; hover the red marker to see removed lines."
+          ],
+          "default": "diff",
+          "description": "Where files Claude changed open for review."
         }
       }
+    },
+    "configurationDefaults": {
+      "diffEditor.renderSideBySide": false,
+      "diffEditor.codeLens": true
     }
   },
   "scripts": {

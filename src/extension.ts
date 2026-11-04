@@ -55,6 +55,13 @@ function hunkLine(doc: vscode.TextDocument, hunk: Hunk): number {
 	return Math.min(hunk.startLine, Math.max(doc.lineCount - 1, 0));
 }
 
+// A tab showing one of our "before Claude ↔ now" diffs; its modified side is the real file.
+function reviewDiffTab(tab: vscode.Tab): vscode.TabInputTextDiff | undefined {
+	const input = tab.input;
+	return input instanceof vscode.TabInputTextDiff && input.original.scheme === BASE_SCHEME && input.modified.scheme === 'file'
+		? input : undefined;
+}
+
 function plural(n: number, word: string): string {
 	return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
@@ -63,6 +70,7 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 	private entries = new Map<string, Entry>();
 	private seen = new Set<string>();
 	private loadedOnce = false;
+	private closingDiffs = false;
 	private manifestWatchers: vscode.Disposable[] = [];
 	private fileWatchers = new Map<string, vscode.Disposable>();
 	private refreshTimer: NodeJS.Timeout | undefined;
@@ -149,6 +157,7 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 			}
 		}
 
+		this.closeFinishedDiffs();
 		vscode.window.visibleTextEditors.forEach(e => this.decorate(e));
 		this.codeLensEmitter.fire();
 		this.treeEmitter.fire();
@@ -168,7 +177,7 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 			this.seen.add(absPath);
 			if (autoOpen) {
 				try {
-					await vscode.window.showTextDocument(vscode.Uri.file(absPath), { preview: false, preserveFocus: true });
+					await this.openReview(absPath, { preview: false, preserveFocus: true });
 				} catch {
 					// Binary or unreadable file: it stays in the Claude Changes list.
 				}
@@ -214,9 +223,16 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 		return { entry, base, current, diff: computeDiff(base, current) };
 	}
 
+	// Whether the editor is the file side of our diff view, which draws removed and added lines itself.
+	private inReviewDiff(editor: vscode.TextEditor): boolean {
+		const group = vscode.window.tabGroups.all.find(g => g.viewColumn === editor.viewColumn);
+		const diff = group?.activeTab && reviewDiffTab(group.activeTab);
+		return !!diff && diff.modified.fsPath === editor.document.uri.fsPath;
+	}
+
 	decorate(editor: vscode.TextEditor): void {
 		const doc = editor.document;
-		const review = doc.uri.scheme === 'file' ? this.review(doc.uri.fsPath) : undefined;
+		const review = doc.uri.scheme === 'file' && !this.inReviewDiff(editor) ? this.review(doc.uri.fsPath) : undefined;
 		const added: vscode.DecorationOptions[] = [];
 		const above: vscode.DecorationOptions[] = [];
 		const below: vscode.DecorationOptions[] = [];
@@ -271,7 +287,7 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 			new vscode.CodeLens(top, { title: `$(sparkle) Claude: ${plural(review.diff.hunks.length, 'change')}`, command: '' }),
 			new vscode.CodeLens(top, { title: '$(check-all) Accept All ⌥⌘↩', command: 'claudeInlineDiff.acceptFile', arguments: [uri] }),
 			new vscode.CodeLens(top, { title: '$(discard) Reject All ⌥⌘⌫', command: 'claudeInlineDiff.rejectFile', arguments: [uri] }),
-			new vscode.CodeLens(top, { title: '$(diff) Compare', command: 'claudeInlineDiff.compareFile', arguments: [uri] }),
+			new vscode.CodeLens(top, { title: '$(diff) Diff View', command: 'claudeInlineDiff.compareFile', arguments: [uri] }),
 		];
 		for (const hunk of review.diff.hunks) {
 			const range = new vscode.Range(hunkLine(doc, hunk), 0, hunkLine(doc, hunk), 0);
@@ -313,7 +329,8 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 
 	provideTextDocumentContent(uri: vscode.Uri): string {
 		const entry = this.entries.get(uri.fsPath);
-		return (entry && readBase(entry)) ?? '';
+		// Once the review is over the diff is about to close; showing the file keeps it from flashing all green.
+		return (entry ? readBase(entry) : undefined) ?? this.currentText(uri.fsPath);
 	}
 
 	// ---- actions ----
@@ -350,7 +367,7 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 			await doc.save();
 		}
 		const tabs = vscode.window.tabGroups.all.flatMap(g => g.tabs)
-			.filter(t => t.input instanceof vscode.TabInputText && t.input.uri.fsPath === absPath);
+			.filter(t => (t.input instanceof vscode.TabInputText && t.input.uri.fsPath === absPath) || reviewDiffTab(t)?.modified.fsPath === absPath);
 		await vscode.window.tabGroups.close(tabs);
 		if (fs.existsSync(absPath)) {
 			await vscode.workspace.fs.delete(vscode.Uri.file(absPath), { useTrash: true });
@@ -470,10 +487,57 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 	}
 
 	async compareFile(uriArg?: unknown): Promise<void> {
-		const entry = this.entries.get(this.target(uriArg) ?? '');
-		if (entry) {
-			await vscode.commands.executeCommand('vscode.diff', this.baseUri(entry.absPath), vscode.Uri.file(entry.absPath),
-				`${entry.key} (before Claude ↔ now)`);
+		const absPath = this.target(uriArg);
+		if (absPath && this.entries.has(absPath)) {
+			await this.openDiff(absPath, { preview: false });
+		}
+	}
+
+	private async openDiff(absPath: string, options: vscode.TextDocumentShowOptions): Promise<void> {
+		const entry = this.entries.get(absPath)!;
+		await vscode.commands.executeCommand('vscode.diff', this.baseUri(absPath), vscode.Uri.file(absPath),
+			`${entry.key} (Claude's changes)`, options);
+	}
+
+	// Opens a changed file the way the claudeInlineDiff.openIn setting says.
+	private async openReview(absPath: string, options: vscode.TextDocumentShowOptions): Promise<vscode.TextEditor | undefined> {
+		const openIn = vscode.workspace.getConfiguration('claudeInlineDiff').get<string>('openIn', 'diff');
+		if (openIn === 'diff' && (this.review(absPath)?.diff.hunks.length ?? 0) > 0) {
+			await this.openDiff(absPath, options);
+			return vscode.window.activeTextEditor?.document.uri.fsPath === absPath ? vscode.window.activeTextEditor : undefined;
+		}
+		return vscode.window.showTextDocument(vscode.Uri.file(absPath), options);
+	}
+
+	// When a file has nothing left to review, its diff view gives way to the normal editor.
+	private async closeFinishedDiffs(): Promise<void> {
+		if (this.closingDiffs) {
+			return;
+		}
+		this.closingDiffs = true;
+		try {
+			await this.closeFinishedDiffTabs();
+		} catch {
+			// A tab closed meanwhile; the next refresh catches up.
+		} finally {
+			this.closingDiffs = false;
+		}
+	}
+
+	private async closeFinishedDiffTabs(): Promise<void> {
+		for (const group of vscode.window.tabGroups.all) {
+			for (const tab of group.tabs) {
+				const diff = reviewDiffTab(tab);
+				if (!diff || (this.review(diff.modified.fsPath)?.diff.hunks.length ?? 0) > 0) {
+					continue;
+				}
+				if (fs.existsSync(diff.modified.fsPath)) {
+					await vscode.window.showTextDocument(diff.modified, {
+						viewColumn: group.viewColumn, preview: false, preserveFocus: !(group.isActive && tab.isActive),
+					});
+				}
+				await vscode.window.tabGroups.close(tab);
+			}
 		}
 	}
 
@@ -482,9 +546,9 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 		if (!absPath || !fs.existsSync(absPath)) {
 			return;
 		}
-		const editor = await vscode.window.showTextDocument(vscode.Uri.file(absPath), { preview: false });
+		const editor = await this.openReview(absPath, { preview: false });
 		const first = this.review(absPath)?.diff.hunks[0];
-		if (first) {
+		if (editor && first) {
 			const pos = new vscode.Position(hunkLine(editor.document, first), 0);
 			editor.selection = new vscode.Selection(pos, pos);
 			editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
@@ -580,6 +644,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 		}),
 		vscode.window.onDidChangeVisibleTextEditors(editors => editors.forEach(e => controller.decorate(e))),
+		vscode.window.tabGroups.onDidChangeTabs(() => vscode.window.visibleTextEditors.forEach(e => controller.decorate(e))),
 		vscode.window.onDidChangeActiveTextEditor(() => controller.scheduleRefresh()),
 		vscode.workspace.onDidChangeWorkspaceFolders(() => {
 			controller.watchRoots();
