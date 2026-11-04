@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 - The extension makes diff views inline and turns on their CodeLens by default (`diffEditor.renderSideBySide: false`, `diffEditor.codeLens: true`). Values you set yourself still win.
 - The **Compare** action is now called **Diff View**.
+- The hook and setup honour `CLAUDE_CONFIG_DIR`, like Claude Code does. The tests use it instead of a fake home folder, which made macOS show a "Keychain Not Found" popup on every run.
 
 ## [0.6.0] - 2026-11-04
 

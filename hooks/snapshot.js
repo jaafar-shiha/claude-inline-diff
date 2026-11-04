@@ -80,7 +80,9 @@ function locate(file) {
 }
 
 function sessionPath(sessionId) {
-	return path.join(os.homedir(), '.claude', 'inline-diff', 'sessions', `${sessionId.replace(/[^\w.-]/g, '_')}.json`);
+	// Claude Code's config folder: ~/.claude, or wherever CLAUDE_CONFIG_DIR points.
+	const claudeDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+	return path.join(claudeDir, 'inline-diff', 'sessions', `${sessionId.replace(/[^\w.-]/g, '_')}.json`);
 }
 
 // ---- PreToolUse ----

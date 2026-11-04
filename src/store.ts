@@ -149,8 +149,9 @@ export function removeEntry(entry: Entry): void {
 
 // ---- setup ----
 
+// Claude Code's config folder: ~/.claude, or wherever CLAUDE_CONFIG_DIR points.
 function claudeDir(): string {
-	return path.join(os.homedir(), '.claude');
+	return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 }
 
 function globalScriptPath(): string {

@@ -61,7 +61,8 @@ suite('editor integration', () => {
 	const reject = (lenses: vscode.CodeLens[]) => lenses.find(l => l.command!.command === 'claudeInlineDiff.rejectHunk')!;
 
 	suiteSetup(async () => {
-		assert.notStrictEqual(os.homedir(), process.env.REAL_HOME, 'tests must not use the real home folder');
+		const config = process.env.CLAUDE_CONFIG_DIR;
+		assert.ok(config && config.startsWith(os.tmpdir()), 'tests must not use the real ~/.claude folder');
 		await vscode.extensions.getExtension('jaafar-shiha.claude-inline-diff')!.activate();
 	});
 
