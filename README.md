@@ -28,7 +28,16 @@ The extension works with every Claude Code session on your machine: the VS Code 
   1 file still to review in VS Code.
   ```
   A file whose changes you partly kept and partly undid shows as `✅❌ partly accepted`.
-- **Review queue.** A **Claude Changes** view in the Explorer and a status bar counter list every file waiting for review.
+- **Nothing slips through.** Several safety nets make sure no change is left unreviewed:
+  - a ✦ badge and an orange color on pending files in the Explorer, their folders and their tabs;
+  - an orange "N files to review" counter in the status bar, and a **Claude Changes** list in the Explorer;
+  - a reminder when VS Code opens with reviews left over from last time;
+  - a **commit guard**: `git commit` stops while a file you're committing still has unreviewed Claude changes.
+    ```
+    Claude Inline Diff: commit stopped. 1 staged file has Claude changes you haven't reviewed:
+      lib/home_screen.dart
+    Accept or reject them in VS Code, then commit again. To commit anyway: git commit --no-verify
+    ```
 - **Keyboard-first.** Accept or reject the change under the cursor without touching the mouse.
 - **Safe by design.** Rejecting a file that Claude created moves it to the trash rather than deleting it permanently, and destructive bulk actions ask for confirmation.
 
@@ -86,9 +95,10 @@ Then install the generated `claude-inline-diff-<version>.vsix` as above.
 2. Start a **new** Claude Code session. Sessions that were already running don't pick up new hooks.
 3. Ask Claude to change something. The file opens in the red/green view, ready for review.
 
-Setup does two things:
+Setup does three things:
 - It registers the hook once in `~/.claude/settings.json`, for `PreToolUse` (file edits) and `Stop` (end of reply), so every Claude Code client uses it.
 - It creates `.claude/inline-diff/` in the project. Only projects with this folder are tracked.
+- If the project is a git repository, it adds the commit guard to `.git/hooks/pre-commit`, between marked lines, keeping any hook already there. Repositories whose hooks are managed elsewhere (`core.hooksPath`, as husky does) are left alone.
 
 > **Tip:** For the full Cursor-like flow, set Claude Code's permission mode to **Edit automatically** (`acceptEdits`). Claude then applies edits directly, and you review them afterwards in the file instead of approving each one up front.
 
@@ -109,6 +119,7 @@ Shortcuts are active only while the focused file has pending changes.
 | -------------------------------- | ------- | ------------------------------------------------------------- |
 | `claudeInlineDiff.autoOpenFiles` | `true`  | Open each file in an editor tab as soon as Claude edits it.   |
 | `claudeInlineDiff.openIn`        | `diff`  | `diff`: the red/green inline diff view. `editor`: the normal editor with green highlights and red hover hints. |
+| `claudeInlineDiff.blockCommitsWithPendingChanges` | `true` | Stop `git commit` while a staged file has unreviewed Claude changes. Turning it off removes the extension's lines from `.git/hooks/pre-commit`. |
 
 The extension also changes two VS Code defaults, so diff views are inline and show the Accept/Reject buttons: `diffEditor.renderSideBySide: false` and `diffEditor.codeLens: true`. These apply to every diff view, Git included. Any value you set yourself takes priority.
 
@@ -118,16 +129,18 @@ The extension also changes two VS Code defaults, so diff views are inline and sh
 - **A hook instead of an editor integration.** Hooking into Claude Code's tool calls makes the extension independent of *where* Claude runs. The same flow covers the VS Code panel, the CLI and the desktop app.
 - **Reuse VS Code's diff editor for removed lines.** The extension API can't insert virtual lines into a normal editor. Rather than fake them, the extension serves the snapshot as a virtual document and lets VS Code's own inline diff editor draw the removed lines, with the review buttons added on top.
 - **Accept rewrites the baseline; Reject rewrites the file.** Both are pure functions over the same hunk list (`src/hunks.ts`), so partial review is just "rebuild the text, taking the new side for these hunks". That makes the review logic easy to unit-test.
+- **A commit guard as the last safety net.** Editor reminders can be dismissed, but a commit is where unreviewed code would become permanent. The guard checks only the files being committed, so unrelated work is never held up, and any error inside it lets the commit through.
 - **Never block, never lose work.** The hook swallows its own errors and always exits 0. Manifest writes are atomic (write to a temp file, then rename). Deleting a Claude-created file goes to the system trash.
 
 ## Project structure
 
 ```
 hooks/snapshot.js      Claude Code hook: snapshots files before the first edit (PreToolUse)
-                       and lists edited files with their status when a reply ends (Stop)
+                       and lists edited files with their status when a reply ends (Stop);
+                       with --pending, the git pre-commit check
 src/extension.ts       VS Code integration: decorations, CodeLens, tree view, commands
 src/hunks.ts           Pure diff/hunk logic: compute, accept, reject
-src/store.ts           On-disk state, hook installation and migrations
+src/store.ts           On-disk state, hook and commit-guard installation, migrations
 src/test/              Unit tests (hunks) and integration tests run inside VS Code
 ```
 

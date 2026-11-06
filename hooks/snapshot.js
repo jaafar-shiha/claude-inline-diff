@@ -7,6 +7,9 @@
 //   Stop                               when Claude finishes a reply, lists the files this chat edited
 //                                      with their review status (accepted, rejected, still pending).
 //
+// Run as `node snapshot.js --pending <project>` (from the git pre-commit hook the extension installs),
+// it stops a commit that includes files with Claude changes nobody has reviewed yet.
+//
 // The extension installs this script once, as ~/.claude/hooks/claude-inline-diff-snapshot.js, and
 // registers it in ~/.claude/settings.json, so it runs for every Claude Code session
 // (VS Code, terminal, desktop app) whatever folder that session started in.
@@ -14,6 +17,7 @@
 //
 // It must never block Claude, so it always exits with code 0.
 
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -200,7 +204,50 @@ function forgetOldSessions() {
 	}
 }
 
+// ---- git pre-commit ----
+
+function realpath(file) {
+	try {
+		return fs.realpathSync(file);
+	} catch {
+		return path.resolve(file);
+	}
+}
+
+// Exit code for the pre-commit hook: 1 when a staged file still has unreviewed Claude changes.
+// Any failure of its own lets the commit through, so a bug here never blocks the user's work.
+function checkCommit(root) {
+	try {
+		const manifest = readJson(path.join(root, '.claude', 'inline-diff', 'manifest.json'));
+		const pending = Object.keys(manifest).filter(key => status(path.join(root, key))?.icon === '⏳');
+		if (pending.length === 0) {
+			return 0;
+		}
+		const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
+		const top = git(['rev-parse', '--show-toplevel']).trim();
+		const staged = new Set(git(['diff', '--cached', '--name-only', '-z']).split('\0').filter(Boolean)
+			.map(name => realpath(path.join(top, name))));
+		const blocked = pending.filter(key => staged.has(realpath(path.join(root, key))));
+		if (blocked.length === 0) {
+			return 0;
+		}
+		process.stderr.write([
+			`Claude Inline Diff: commit stopped. ${plural(blocked.length, 'staged file')} ${blocked.length === 1 ? 'has' : 'have'} Claude changes you haven't reviewed:`,
+			...blocked.map(key => `  ${key}`),
+			'Accept or reject them in VS Code, then commit again. To commit anyway: git commit --no-verify',
+			'',
+		].join('\n'));
+		return 1;
+	} catch {
+		return 0;
+	}
+}
+
 // ---- main ----
+
+if (process.argv[2] === '--pending') {
+	process.exit(checkCommit(path.resolve(process.argv[3] || process.cwd())));
+}
 
 let input = '';
 process.stdin.setEncoding('utf8');

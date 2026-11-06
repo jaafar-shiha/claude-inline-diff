@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -282,4 +283,94 @@ export function setUpProject(root: string, bundledScript: string): void {
 	fs.writeFileSync(path.join(stateDir(root), '.gitignore'), '*\n');
 	removeLegacyProjectHook(root);
 	migrateSnapshots(root);
+}
+
+// ---- git commit guard ----
+
+// The git pre-commit hook runs the hook script with --pending, which stops a commit that includes
+// files with Claude changes nobody has reviewed. The extension's lines sit between these markers,
+// so a pre-commit hook the user already has keeps working and the block can be removed again.
+const GUARD_BEGIN = '# >>> claude-inline-diff: stop commits with unreviewed Claude changes';
+const GUARD_END = '# <<< claude-inline-diff';
+
+export type GuardResult = 'installed' | 'removed' | 'unchanged' | 'not-git' | 'custom-hooks';
+
+function shellQuote(text: string): string {
+	return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Git hooks don't get the user's shell PATH in every client (GUIs, VS Code), so remember node's path.
+function nodePath(): string {
+	try {
+		return execFileSync('/bin/sh', ['-lc', 'command -v node'], { encoding: 'utf8', timeout: 5000 }).trim() || 'node';
+	} catch {
+		return 'node';
+	}
+}
+
+function guardBlock(root: string): string {
+	return [
+		`${GUARD_BEGIN} (${root})`,
+		`N=${shellQuote(nodePath())}; [ -x "$N" ] || N=$(command -v node)`,
+		`S=${shellQuote(globalScriptPath())}`,
+		`if [ -n "$N" ] && [ -f "$S" ]; then "$N" "$S" --pending ${shellQuote(root)} || exit 1; fi`,
+		GUARD_END,
+		'',
+	].join('\n');
+}
+
+// Adds (enabled) or removes the commit guard for a project in its git repository's pre-commit hook.
+export function syncCommitGuard(root: string, enabled: boolean): GuardResult {
+	const git = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+	let hooksDir: string;
+	try {
+		hooksDir = path.resolve(root, git('rev-parse', '--git-path', 'hooks'));
+	} catch {
+		return 'not-git';
+	}
+	try {
+		if (git('config', '--get', 'core.hooksPath')) {
+			return 'custom-hooks'; // husky and friends own the hooks; leave them alone
+		}
+	} catch {
+		// not set: the usual .git/hooks
+	}
+
+	const hookFile = path.join(hooksDir, 'pre-commit');
+	const existing = fs.existsSync(hookFile) ? fs.readFileSync(hookFile, 'utf8') : undefined;
+	const ours = new RegExp(`${escapeRegExp(`${GUARD_BEGIN} (${root})`)}\\n[\\s\\S]*?${escapeRegExp(GUARD_END)}\\n?`, 'g');
+	const without = existing?.replace(ours, '');
+
+	if (!enabled) {
+		if (existing === undefined || without === existing) {
+			return 'unchanged';
+		}
+		if (without!.trim() === '#!/bin/sh') {
+			fs.rmSync(hookFile); // only our lines were in it
+		} else {
+			fs.writeFileSync(hookFile, without!);
+		}
+		return 'removed';
+	}
+
+	const block = guardBlock(root);
+	if (existing === undefined) {
+		fs.mkdirSync(hooksDir, { recursive: true });
+		fs.writeFileSync(hookFile, `#!/bin/sh\n${block}`, { mode: 0o755 });
+		return 'installed';
+	}
+	if (!/^#!.*\b(sh|bash|zsh)\b/.test(existing)) {
+		return 'custom-hooks'; // not a shell script we can add lines to
+	}
+	const updated = `${without!.replace(/\n*$/, '\n')}${block}`;
+	if (updated === existing) {
+		return 'unchanged';
+	}
+	fs.writeFileSync(hookFile, updated);
+	fs.chmodSync(hookFile, 0o755);
+	return 'installed';
 }

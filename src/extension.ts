@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { acceptHunk, computeDiff, rejectHunk, type FileDiff, type Hunk } from './hunks';
-import { copyHookScript, isProjectSetUp, readBase, readEntries, recordOutcome, removeEntry, setUpProject, writeBase, type Entry } from './store';
+import { copyHookScript, isProjectSetUp, readBase, readEntries, recordOutcome, removeEntry, setUpProject, syncCommitGuard, writeBase, type Entry } from './store';
 
 const BASE_SCHEME = 'claude-inline-diff-base';
 const DONT_ASK_KEY = 'claudeInlineDiff.dontAskSetup';
@@ -66,7 +66,8 @@ function plural(n: number, word: string): string {
 	return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
 
-class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Entry>, vscode.TextDocumentContentProvider {
+class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Entry>, vscode.TextDocumentContentProvider,
+	vscode.FileDecorationProvider {
 	private entries = new Map<string, Entry>();
 	private seen = new Set<string>();
 	// New files from Claude to open once its edit has landed (the hook runs just before the edit).
@@ -83,6 +84,8 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 	private readonly codeLensEmitter = new vscode.EventEmitter<void>();
 	private readonly treeEmitter = new vscode.EventEmitter<void>();
 	private readonly baseEmitter = new vscode.EventEmitter<vscode.Uri>();
+	private readonly decorationEmitter = new vscode.EventEmitter<undefined>();
+	readonly onDidChangeFileDecorations = this.decorationEmitter.event;
 	readonly onDidChangeCodeLenses = this.codeLensEmitter.event;
 	readonly onDidChangeTreeData = this.treeEmitter.event;
 	readonly onDidChange = this.baseEmitter.event;
@@ -90,6 +93,52 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 	constructor(private readonly context: vscode.ExtensionContext) {
 		this.statusBar.command = 'claudeInlineDiff.openNextFile';
 		this.statusBar.tooltip = 'Open the next file Claude changed';
+		// Orange, so files waiting for review stand out.
+		this.statusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+		this.statusBar.color = new vscode.ThemeColor('statusBarItem.warningForeground');
+	}
+
+	// Files with Claude changes still to review.
+	pendingFiles(): string[] {
+		return [...this.entries.keys()].filter(p => (this.review(p)?.diff.hunks.length ?? 0) > 0);
+	}
+
+	// A badge on pending files in the Explorer, also coloring their tabs and parent folders.
+	provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
+		if (uri.scheme !== 'file' || (this.review(uri.fsPath)?.diff.hunks.length ?? 0) === 0) {
+			return undefined;
+		}
+		const decoration = new vscode.FileDecoration('✦', "Claude's changes to review",
+			new vscode.ThemeColor('claudeInlineDiff.pendingForeground'));
+		decoration.propagate = true;
+		return decoration;
+	}
+
+	// When VS Code opens with reviews left over from last time.
+	async remindPending(): Promise<void> {
+		const files = this.pendingFiles();
+		if (files.length === 0) {
+			return;
+		}
+		const names = files.map(p => this.entries.get(p)!.key);
+		const list = names.length <= 3 ? `: ${names.join(', ')}` : '';
+		const answer = await vscode.window.showWarningMessage(
+			`Claude changed ${plural(files.length, 'file')} that you haven't reviewed yet${list}.`, 'Review', 'Later');
+		if (answer === 'Review') {
+			await this.openNextFile();
+		}
+	}
+
+	// Keeps each set-up project's git pre-commit check in line with the setting.
+	syncCommitGuards(): void {
+		const enabled = vscode.workspace.getConfiguration('claudeInlineDiff').get<boolean>('blockCommitsWithPendingChanges', true);
+		for (const root of this.roots().filter(isProjectSetUp)) {
+			try {
+				syncCommitGuard(root, enabled);
+			} catch {
+				// An unwritable hooks folder must not break the extension.
+			}
+		}
 	}
 
 	dispose(): void {
@@ -172,6 +221,7 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 		vscode.window.visibleTextEditors.forEach(e => this.decorate(e));
 		this.codeLensEmitter.fire();
 		this.treeEmitter.fire();
+		this.decorationEmitter.fire(undefined);
 		for (const absPath of this.entries.keys()) {
 			this.baseEmitter.fire(this.baseUri(absPath));
 		}
@@ -265,7 +315,7 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 
 
 	private updateStatus(): void {
-		const files = [...this.entries.keys()].filter(p => (this.review(p)?.diff.hunks.length ?? 0) > 0);
+		const files = this.pendingFiles();
 		if (files.length === 0) {
 			this.statusBar.hide();
 		} else {
@@ -647,6 +697,7 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 	private install(root: string, quiet = false): void {
 		try {
 			setUpProject(root, this.bundledScript);
+			this.syncCommitGuards();
 			if (!quiet) {
 				vscode.window.showInformationMessage(
 					'Claude Inline Diff is set up. Edits from any new Claude Code session (VS Code, terminal or desktop app) will show here.');
@@ -717,6 +768,12 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.languages.registerCodeLensProvider({ scheme: 'file' }, controller),
 		vscode.window.registerTreeDataProvider('claudeInlineDiff.changes', controller),
 		vscode.workspace.registerTextDocumentContentProvider(BASE_SCHEME, controller),
+		vscode.window.registerFileDecorationProvider(controller),
+		vscode.workspace.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('claudeInlineDiff.blockCommitsWithPendingChanges')) {
+				controller.syncCommitGuards();
+			}
+		}),
 		vscode.workspace.onDidChangeTextDocument(e => {
 			if (e.document.uri.scheme === 'file' && controller.tracks(e.document.uri.fsPath)) {
 				controller.scheduleRefresh();
@@ -735,6 +792,10 @@ export function activate(context: vscode.ExtensionContext) {
 	controller.watchRoots();
 	controller.refresh();
 	controller.offerSetUp();
+	controller.remindPending();
+
+	// For the integration tests.
+	return { pendingFiles: () => controller.pendingFiles(), fileDecoration: (uri: vscode.Uri) => controller.provideFileDecoration(uri) };
 }
 
 export function deactivate() {}

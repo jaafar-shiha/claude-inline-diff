@@ -3,7 +3,15 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/).
 
-## [0.7.1] - 2026-11-06
+## [0.8.0] - 2026-11-06
+
+### Added
+- **Commit guard.** `git commit` stops while a file you're committing still has Claude changes you haven't accepted or rejected, and names those files. It's a few marked lines in the project's `.git/hooks/pre-commit`; a hook you already have keeps working. Turn it off with `claudeInlineDiff.blockCommitsWithPendingChanges`, or skip it once with `git commit --no-verify`.
+- **Reminder on startup.** When VS Code opens with reviews left over, a notification lists them, with a **Review** button.
+- **Badges.** Files waiting for review get a ✦ badge and an orange color in the Explorer (their folders too) and on their tabs.
+
+### Changed
+- The "N files to review" counter in the status bar is orange.
 
 ### Fixed
 - Files Claude edited opened in the normal editor instead of the red/green diff view. The hook runs just before Claude's edit lands, and the file was opened at that moment, while it still had no changes. Files now open once the edit is there.
@@ -62,7 +70,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - First version: a `PreToolUse` hook snapshots files before Claude edits them, and the extension shows added and removed lines with per-change Accept/Reject.
 
-[0.7.1]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.7.0...v0.7.1
+[0.8.0]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jaafar-shiha/claude-inline-diff/releases/tag/v0.5.0

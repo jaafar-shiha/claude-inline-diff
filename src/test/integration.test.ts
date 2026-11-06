@@ -242,4 +242,65 @@ suite('editor integration', () => {
 		assert.ok(plainTabOf(file), 'the plain tab the user asked for stays');
 		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 	});
+
+	const api = () => vscode.extensions.getExtension('jaafar-shiha.claude-inline-diff')!.exports as {
+		pendingFiles(): string[]; fileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined;
+	};
+
+	test('files waiting for review get a badge in the Explorer, which goes once they are reviewed', async () => {
+		const file = path.join(root, 'lib', 'badge.dart');
+		fs.writeFileSync(file, 'var a = 1;\n');
+		claudeEdits(file, 'var a = 2;\n');
+		const uri = vscode.Uri.file(file);
+		const badge = await waitFor('the badge', () => api().fileDecoration(uri));
+		assert.strictEqual(badge.badge, '✦');
+		assert.ok(badge.propagate, 'parent folders are marked too');
+		assert.ok(api().pendingFiles().includes(file));
+
+		const { lenses } = await openWithChanges(file);
+		await run(reject(lenses));
+		await waitFor('the badge to go', () => (api().fileDecoration(uri) ? undefined : true));
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+	});
+
+	test('git commit is stopped while a staged file has unreviewed Claude changes, and the user keeps their own hook', async () => {
+		const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', ...args],
+			{ cwd: root, encoding: 'utf8', stdio: 'pipe' });
+		git('init', '-q');
+		const hookFile = path.join(root, '.git', 'hooks', 'pre-commit');
+		fs.writeFileSync(hookFile, '#!/bin/sh\necho "the user\'s own check"\n', { mode: 0o755 });
+		await vscode.commands.executeCommand('claudeInlineDiff.setUpHook');
+		const hookText = await waitFor('the commit guard', () => {
+			const text = fs.readFileSync(hookFile, 'utf8');
+			return text.includes('claude-inline-diff') ? text : undefined;
+		});
+		assert.ok(hookText.includes("the user's own check"), 'the existing hook is kept');
+
+		const file = path.join(root, 'lib', 'commit_me.dart');
+		fs.writeFileSync(file, 'final x = 1;\n');
+		claudeEdits(file, 'final x = 2;\n');
+		git('add', 'lib/commit_me.dart');
+		let error: any;
+		try {
+			git('commit', '-q', '-m', 'unreviewed');
+		} catch (err) {
+			error = err;
+		}
+		assert.ok(error, 'the commit is stopped');
+		assert.match(String(error.stderr), /commit stopped[\s\S]*lib\/commit_me\.dart/);
+
+		const { lenses } = await openWithChanges(file);
+		await run(accept(lenses));
+		await waitFor('the review to finish', () => (api().pendingFiles().includes(file) ? undefined : true));
+		git('add', 'lib/commit_me.dart');
+		git('commit', '-q', '-m', 'reviewed'); // goes through now
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+
+		// Turning the setting off takes the extension's lines out again, and only those.
+		const settings = vscode.workspace.getConfiguration('claudeInlineDiff');
+		await settings.update('blockCommitsWithPendingChanges', false, vscode.ConfigurationTarget.Workspace);
+		await waitFor('the guard to be removed', () => (fs.readFileSync(hookFile, 'utf8').includes('claude-inline-diff') ? undefined : true));
+		assert.strictEqual(fs.readFileSync(hookFile, 'utf8'), '#!/bin/sh\necho "the user\'s own check"\n');
+		await settings.update('blockCommitsWithPendingChanges', undefined, vscode.ConfigurationTarget.Workspace);
+	});
 });

@@ -2,7 +2,7 @@
   "name": "claude-inline-diff",
   "displayName": "Claude Inline Diff",
   "description": "Review Claude Code's edits inline, Cursor-style: green added lines, red removed lines, Accept/Reject per change.",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "publisher": "jaafar-shiha",
   "author": {
     "name": "Jaafar Shiha",
@@ -244,13 +244,30 @@
           ],
           "default": "diff",
           "description": "Where files Claude changed open for review."
+        },
+        "claudeInlineDiff.blockCommitsWithPendingChanges": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Stop `git commit` while a file you are committing still has Claude changes you haven't accepted or rejected. Adds a few marked lines to the project's .git/hooks/pre-commit; turning this off removes them. Skip once with `git commit --no-verify`."
         }
       }
     },
     "configurationDefaults": {
       "diffEditor.renderSideBySide": false,
       "diffEditor.codeLens": true
-    }
+    },
+    "colors": [
+      {
+        "id": "claudeInlineDiff.pendingForeground",
+        "description": "Color of files with Claude changes to review, in the Explorer and on tabs.",
+        "defaults": {
+          "dark": "#E2A33A",
+          "light": "#B26B00",
+          "highContrast": "#FFB84D",
+          "highContrastLight": "#8A5200"
+        }
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
