@@ -206,4 +206,40 @@ suite('editor integration', () => {
 			t.input instanceof vscode.TabInputText && t.input.uri.fsPath === file), 'the file is open in a normal editor');
 		assert.ok(fs.readFileSync(file, 'utf8').includes('DraggableScrollableSheet'));
 	});
+
+	const diffTabOf = (file: string) => vscode.window.tabGroups.all.flatMap(g => g.tabs).find(t =>
+		t.input instanceof vscode.TabInputTextDiff && t.input.modified.fsPath === file);
+	const plainTabOf = (file: string) => vscode.window.tabGroups.all.flatMap(g => g.tabs).find(t =>
+		t.input instanceof vscode.TabInputText && t.input.uri.fsPath === file);
+
+	test('the diff view opens even though the hook runs before Claude writes the file (real timing)', async () => {
+		const file = path.join(root, 'lib', 'timing.dart');
+		fs.writeFileSync(file, 'Text("old");\n');
+		execFileSync('node', [hook], {
+			input: JSON.stringify({ hook_event_name: 'PreToolUse', session_id: 'timing', cwd: root, tool_name: 'Edit', tool_input: { file_path: file } }),
+		});
+		// The extension sees the new manifest entry while the file is still unchanged...
+		await new Promise(r => setTimeout(r, 600));
+		assert.strictEqual(plainTabOf(file), undefined, 'nothing to show yet, so no plain editor either');
+		// ...and only then does Claude's edit land.
+		fs.writeFileSync(file, 'Text("new");\nText("more");\n');
+		await waitFor('the diff view', () => diffTabOf(file));
+		assert.strictEqual(plainTabOf(file), undefined);
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+	});
+
+	test('a file already open in a normal tab switches to the diff view when Claude changes it', async () => {
+		const file = path.join(root, 'lib', 'open_already.dart');
+		fs.writeFileSync(file, 'int a = 1;\n');
+		await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file), { preview: false });
+		claudeEdits(file, 'int a = 2;\nint b = 3;\n');
+		await waitFor('the diff view', () => diffTabOf(file));
+		await waitFor('the plain tab to close', () => (plainTabOf(file) ? undefined : true));
+
+		// Leaving the diff view (VS Code's "Open File") isn't undone by the extension.
+		await vscode.window.showTextDocument(vscode.Uri.file(file), { preview: false });
+		await new Promise(r => setTimeout(r, 600));
+		assert.ok(plainTabOf(file), 'the plain tab the user asked for stays');
+		await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+	});
 });

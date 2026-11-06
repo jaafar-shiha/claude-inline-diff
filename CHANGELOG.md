@@ -3,6 +3,12 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - 2026-11-06
+
+### Fixed
+- Files Claude edited opened in the normal editor instead of the red/green diff view. The hook runs just before Claude's edit lands, and the file was opened at that moment, while it still had no changes. Files now open once the edit is there.
+- A file that is already open in a normal tab switches to the diff view when Claude changes it. Tabs in the background switch when you bring them to the front, so your view never jumps. If you leave the diff view yourself, it isn't forced on you again until Claude's next round of changes.
+
 ## [0.7.0] - 2026-11-04
 
 ### Added
@@ -56,6 +62,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - First version: a `PreToolUse` hook snapshots files before Claude edits them, and the extension shows added and removed lines with per-change Accept/Reject.
 
+[0.7.1]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jaafar-shiha/claude-inline-diff/releases/tag/v0.5.0

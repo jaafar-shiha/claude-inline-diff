@@ -2,7 +2,7 @@
   "name": "claude-inline-diff",
   "displayName": "Claude Inline Diff",
   "description": "Review Claude Code's edits inline, Cursor-style: green added lines, red removed lines, Accept/Reject per change.",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "publisher": "jaafar-shiha",
   "author": {
     "name": "Jaafar Shiha",

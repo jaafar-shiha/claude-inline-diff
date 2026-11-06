@@ -69,8 +69,13 @@ function plural(n: number, word: string): string {
 class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Entry>, vscode.TextDocumentContentProvider {
 	private entries = new Map<string, Entry>();
 	private seen = new Set<string>();
+	// New files from Claude to open once its edit has landed (the hook runs just before the edit).
+	private toOpen = new Set<string>();
+	// Files already put in the diff view for the current round of changes.
+	private diffShown = new Set<string>();
 	private loadedOnce = false;
 	private closingDiffs = false;
+	private showingDiffs = false;
 	private manifestWatchers: vscode.Disposable[] = [];
 	private fileWatchers = new Map<string, vscode.Disposable>();
 	private refreshTimer: NodeJS.Timeout | undefined;
@@ -156,8 +161,14 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 				this.seen.delete(p);
 			}
 		}
+		for (const p of [...this.toOpen, ...this.diffShown]) {
+			if (!this.entries.has(p)) {
+				this.toOpen.delete(p);
+				this.diffShown.delete(p);
+			}
+		}
 
-		this.closeFinishedDiffs();
+		this.closeFinishedDiffs().then(() => this.showDiffs());
 		vscode.window.visibleTextEditors.forEach(e => this.decorate(e));
 		this.codeLensEmitter.fire();
 		this.treeEmitter.fire();
@@ -175,15 +186,83 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 				continue;
 			}
 			this.seen.add(absPath);
-			if (autoOpen) {
+			if (!autoOpen) {
+				continue;
+			}
+			if (this.openInDiff()) {
+				this.toOpen.add(absPath); // showDiffs opens it once Claude's edit is there
+			} else {
 				try {
-					await this.openReview(absPath, { preview: false, preserveFocus: true });
+					await vscode.window.showTextDocument(vscode.Uri.file(absPath), { preview: false, preserveFocus: true });
 				} catch {
 					// Binary or unreadable file: it stays in the Claude Changes list.
 				}
 			}
 		}
 	}
+
+	private openInDiff(): boolean {
+		return vscode.workspace.getConfiguration('claudeInlineDiff').get<string>('openIn', 'diff') === 'diff';
+	}
+
+	// Puts each file with changes to review in the red/green diff view, once per round of changes:
+	// a normal tab of the file is swapped for the diff view, and a file Claude just edited is opened.
+	// Once shown, the user may leave the diff view; it isn't forced on them again until a new round.
+	private async showDiffs(): Promise<void> {
+		if (this.showingDiffs) {
+			return;
+		}
+		this.showingDiffs = true;
+		try {
+			for (const absPath of this.entries.keys()) {
+				const pending = (this.review(absPath)?.diff.hunks.length ?? 0) > 0;
+				if (!pending) {
+					this.diffShown.delete(absPath); // the next edit starts a new round
+					continue;
+				}
+				if (!this.openInDiff() || this.diffShown.has(absPath)) {
+					continue;
+				}
+				if (await this.showDiff(absPath)) {
+					this.diffShown.add(absPath);
+				}
+			}
+		} catch {
+			// A tab or file went away meanwhile; the next refresh catches up.
+		} finally {
+			this.showingDiffs = false;
+		}
+	}
+
+	// Whether the file is now in the diff view. A tab in the background is left alone until it's
+	// brought to the front, so the user's view never jumps.
+	private async showDiff(absPath: string): Promise<boolean> {
+		const tabs = () => vscode.window.tabGroups.all.flatMap(group => group.tabs.map(tab => ({ group, tab })));
+		const isPlain = (tab: vscode.Tab) => tab.input instanceof vscode.TabInputText && tab.input.uri.scheme === 'file'
+			&& tab.input.uri.fsPath === absPath;
+		if (tabs().some(({ tab }) => reviewDiffTab(tab)?.modified.fsPath === absPath)) {
+			this.toOpen.delete(absPath);
+			return true;
+		}
+		const visible = tabs().filter(({ tab }) => tab.isActive && isPlain(tab)).map(({ group }) => group);
+		for (const group of visible) {
+			await this.openDiff(absPath, { viewColumn: group.viewColumn, preview: false, preserveFocus: !group.isActive });
+			const old = vscode.window.tabGroups.all.find(g => g.viewColumn === group.viewColumn)?.tabs.find(isPlain);
+			if (old) {
+				await vscode.window.tabGroups.close(old);
+			}
+		}
+		if (visible.length > 0) {
+			this.toOpen.delete(absPath);
+			return true;
+		}
+		if (this.toOpen.delete(absPath)) {
+			await this.openDiff(absPath, { preview: false, preserveFocus: true });
+			return true;
+		}
+		return false;
+	}
+
 
 	private updateStatus(): void {
 		const files = [...this.entries.keys()].filter(p => (this.review(p)?.diff.hunks.length ?? 0) > 0);
