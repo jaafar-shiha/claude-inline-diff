@@ -3,6 +3,14 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-11-09
+
+### Added
+- **The chat explains each change before it happens.** In projects set up for review, Claude is asked at the start of every chat to say what it's about to change and why, right before each edit, so the chat reads as an ordered story of the changes.
+  - The hook checks this before every edit. An edit with no explanation is sent back to Claude to explain first, at most twice in a row, so Claude can never get stuck.
+  - When Claude explains only in its thinking, which the chat hides, the hook shows that explanation in the chat right before the edit, as a `✎ file: …` note.
+  - Turn it off with `claudeInlineDiff.explainEditsInChat`.
+
 ## [0.8.0] - 2026-11-06
 
 ### Added
@@ -70,6 +78,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - First version: a `PreToolUse` hook snapshots files before Claude edits them, and the extension shows added and removed lines with per-change Accept/Reject.
 
+[0.9.0]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jaafar-shiha/claude-inline-diff/compare/v0.5.0...v0.6.0

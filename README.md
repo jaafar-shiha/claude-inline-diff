@@ -19,6 +19,11 @@ The extension works with every Claude Code session on your machine: the VS Code 
 - **Normal-editor mode.** You can also review in a plain editor. Added lines get a green background, and removed lines show as a red struck-through hint with the full code on hover.
 - **Per-change review.** `✓ Accept` / `✗ Reject` buttons sit directly above each changed block. Accept keeps Claude's version; Reject restores your original lines in place.
 - **File-level actions.** **Accept All**, **Reject All** and **Diff View** at the top of every changed file.
+- **The chat tells the story.** Right before each edit, Claude says in the chat what it's about to change and why, including what any new variable or function is for. When reviewing, you can read the chat top to bottom and match each change to its reason.
+  ```
+  ✎ lib/cart.dart: I'm storing the last request actually sent (as JSON) instead of just the cart ID,
+    so a changed attribution triggers a new send.
+  ```
 - **End-of-reply checklist.** When Claude finishes a reply, the chat lists every file it edited in that conversation, so nothing slips through:
   ```
   Claude Inline Diff: 3 files edited in this chat
@@ -58,13 +63,17 @@ flowchart LR
     C --> H
 ```
 
-1. **Capture.** A Claude Code [`PreToolUse` hook](https://docs.claude.com/en/docs/claude-code/hooks) runs right before Claude's file tools (`Edit`, `Write`, `MultiEdit`). The first time Claude touches a file, the hook saves a snapshot of it and records the file in a manifest. The hook always exits successfully, so it can never block Claude.
+1. **Capture.** A Claude Code [`PreToolUse` hook](https://docs.claude.com/en/docs/claude-code/hooks) runs right before Claude's file tools (`Edit`, `Write`, `MultiEdit`). The first time Claude touches a file, the hook saves a snapshot of it and records the file in a manifest. If the hook itself fails, it lets the edit through, so a bug in it can never block Claude.
 2. **Diff.** The extension watches the manifest and the edited files. It computes a line diff between each snapshot and the current text, then groups the result into *hunks*, which are runs of consecutive changes.
 3. **Review.** The file opens in a diff editor between the snapshot (served by a virtual document provider) and the real file. Each hunk gets CodeLens actions on the file side. In normal-editor mode, editor decorations draw the hunks instead.
    - **Accepting** a hunk folds it into the snapshot, so that hunk becomes the new baseline.
    - **Rejecting** a hunk writes the original lines back into the file.
    - When the snapshot and the file match again, the file leaves the review queue.
-4. **Summarize.** The same hook also runs on Claude Code's `Stop` event, when Claude finishes a reply.
+4. **Explain.** When a chat starts in a set-up project, the hook (`SessionStart`) asks Claude to explain each change right before making it. Before every edit, the hook reads the chat transcript:
+   - If Claude explained in its reply, the edit goes ahead.
+   - If Claude explained only in its thinking, which the chat hides, the hook shows that explanation in the chat as a note.
+   - If there's no explanation, the edit is sent back to Claude to explain first. This happens at most twice in a row, so Claude never gets stuck.
+5. **Summarize.** The same hook also runs on Claude Code's `Stop` event, when Claude finishes a reply.
    - It reads which files this chat edited, plus each file's review outcome, and returns the list as a message. Claude Code shows that message at the end of the reply.
    - It stays quiet after replies that edited nothing and left nothing to review.
 
@@ -96,7 +105,7 @@ Then install the generated `claude-inline-diff-<version>.vsix` as above.
 3. Ask Claude to change something. The file opens in the red/green view, ready for review.
 
 Setup does three things:
-- It registers the hook once in `~/.claude/settings.json`, for `PreToolUse` (file edits) and `Stop` (end of reply), so every Claude Code client uses it.
+- It registers the hook once in `~/.claude/settings.json`, for `SessionStart` (chat start), `PreToolUse` (file edits) and `Stop` (end of reply), so every Claude Code client uses it.
 - It creates `.claude/inline-diff/` in the project. Only projects with this folder are tracked.
 - If the project is a git repository, it adds the commit guard to `.git/hooks/pre-commit`, between marked lines, keeping any hook already there. Repositories whose hooks are managed elsewhere (`core.hooksPath`, as husky does) are left alone.
 
@@ -119,6 +128,7 @@ Shortcuts are active only while the focused file has pending changes.
 | -------------------------------- | ------- | ------------------------------------------------------------- |
 | `claudeInlineDiff.autoOpenFiles` | `true`  | Open each file in an editor tab as soon as Claude edits it.   |
 | `claudeInlineDiff.openIn`        | `diff`  | `diff`: the red/green inline diff view. `editor`: the normal editor with green highlights and red hover hints. |
+| `claudeInlineDiff.explainEditsInChat` | `true` | Ask Claude to explain each change, what and why, in the chat right before making it. Applies to chats started afterwards. |
 | `claudeInlineDiff.blockCommitsWithPendingChanges` | `true` | Stop `git commit` while a staged file has unreviewed Claude changes. Turning it off removes the extension's lines from `.git/hooks/pre-commit`. |
 
 The extension also changes two VS Code defaults, so diff views are inline and show the Accept/Reject buttons: `diffEditor.renderSideBySide: false` and `diffEditor.codeLens: true`. These apply to every diff view, Git included. Any value you set yourself takes priority.
@@ -129,13 +139,15 @@ The extension also changes two VS Code defaults, so diff views are inline and sh
 - **A hook instead of an editor integration.** Hooking into Claude Code's tool calls makes the extension independent of *where* Claude runs. The same flow covers the VS Code panel, the CLI and the desktop app.
 - **Reuse VS Code's diff editor for removed lines.** The extension API can't insert virtual lines into a normal editor. Rather than fake them, the extension serves the snapshot as a virtual document and lets VS Code's own inline diff editor draw the removed lines, with the review buttons added on top.
 - **Accept rewrites the baseline; Reject rewrites the file.** Both are pure functions over the same hunk list (`src/hunks.ts`), so partial review is just "rebuild the text, taking the new side for these hunks". That makes the review logic easy to unit-test.
+- **Enforce the explanation, don't just ask for it.** An instruction alone wasn't enough: in real runs Claude often explained only in its hidden thinking, or skipped explaining after a few edits. Checking the transcript before each edit makes the explanation dependable, and showing the thought-only ones keeps the flow fast instead of sending every such edit back.
 - **A commit guard as the last safety net.** Editor reminders can be dismissed, but a commit is where unreviewed code would become permanent. The guard checks only the files being committed, so unrelated work is never held up, and any error inside it lets the commit through.
 - **Never block, never lose work.** The hook swallows its own errors and always exits 0. Manifest writes are atomic (write to a temp file, then rename). Deleting a Claude-created file goes to the system trash.
 
 ## Project structure
 
 ```
-hooks/snapshot.js      Claude Code hook: snapshots files before the first edit (PreToolUse)
+hooks/snapshot.js      Claude Code hook: asks Claude to explain its changes (SessionStart), checks
+                       for that explanation and snapshots files before editing (PreToolUse)
                        and lists edited files with their status when a reply ends (Stop);
                        with --pending, the git pre-commit check
 src/extension.ts       VS Code integration: decorations, CodeLens, tree view, commands

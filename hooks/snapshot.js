@@ -6,6 +6,9 @@
 //                                      files this chat (session) edited.
 //   Stop                               when Claude finishes a reply, lists the files this chat edited
 //                                      with their review status (accepted, rejected, still pending).
+//   SessionStart                       in a project set up for review, asks Claude to explain each
+//                                      change (what and why) right before making it, so the chat
+//                                      reads as an ordered story of the edits.
 //
 // Run as `node snapshot.js --pending <project>` (from the git pre-commit hook the extension installs),
 // it stops a commit that includes files with Claude changes nobody has reviewed yet.
@@ -83,13 +86,135 @@ function locate(file) {
 	};
 }
 
+// Claude Code's config folder: ~/.claude, or wherever CLAUDE_CONFIG_DIR points.
+function claudeDir() {
+	return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+}
+
 function sessionPath(sessionId) {
-	// Claude Code's config folder: ~/.claude, or wherever CLAUDE_CONFIG_DIR points.
-	const claudeDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-	return path.join(claudeDir, 'inline-diff', 'sessions', `${sessionId.replace(/[^\w.-]/g, '_')}.json`);
+	return path.join(claudeDir(), 'inline-diff', 'sessions', `${sessionId.replace(/[^\w.-]/g, '_')}.json`);
 }
 
 // ---- PreToolUse ----
+
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit']);
+// Enough characters to be a sentence, not a stray "Now:".
+const MIN_EXPLANATION = 15;
+// After this many edits sent back in a row, let the next one through, so Claude can never get stuck.
+const MAX_SENT_BACK = 2;
+
+function readTail(file, bytes) {
+	try {
+		const fd = fs.openSync(file, 'r');
+		try {
+			const size = fs.fstatSync(fd).size;
+			const start = Math.max(0, size - bytes);
+			const buffer = Buffer.alloc(size - start);
+			fs.readSync(fd, buffer, 0, buffer.length, start);
+			return buffer.toString('utf8');
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch {
+		return undefined;
+	}
+}
+
+function isUserPrompt(entry) {
+	if (entry.type !== 'user' || entry.isMeta) {
+		return false;
+	}
+	const content = entry.message && entry.message.content;
+	return typeof content === 'string'
+		|| (Array.isArray(content) && !content.some(b => b && b.type === 'tool_result'));
+}
+
+// The explanation Claude gave since its previous edit or the user's last message:
+//   { visible: true }            it wrote reply text, which the chat already shows;
+//   { visible: false, text }     it explained only in its thinking, which the chat hides;
+//   undefined                    it didn't explain.
+// The transcript has one line per content block. Edits in the same message as this one (made together)
+// share an explanation. When the transcript can't be read, it counts as explained: never block on doubt.
+function explanationBeforeEdit(transcriptPath, toolUseId) {
+	const text = transcriptPath ? readTail(transcriptPath, 2 * 1024 * 1024) : undefined;
+	if (text === undefined) {
+		return { visible: true };
+	}
+	const entries = text.split('\n').flatMap(line => {
+		try {
+			return [JSON.parse(line)];
+		} catch {
+			return [];
+		}
+	});
+	const messageOf = id => entries.find(e => e.type === 'assistant' && Array.isArray(e.message?.content)
+		&& e.message.content.some(b => b && b.type === 'tool_use' && b.id === id))?.message.id;
+	const currentMessage = toolUseId ? messageOf(toolUseId) : undefined;
+	let thought;
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (isUserPrompt(entry)) {
+			break;
+		}
+		if (entry.type !== 'assistant' || !Array.isArray(entry.message?.content)) {
+			continue;
+		}
+		let earlierEdit = false;
+		for (const block of [...entry.message.content].reverse()) {
+			if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim().length >= MIN_EXPLANATION) {
+				return { visible: true };
+			}
+			if (block?.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim().length >= MIN_EXPLANATION) {
+				thought ??= block.thinking.trim(); // the latest thought, closest to the edit
+			}
+			if (block?.type === 'tool_use' && EDIT_TOOLS.has(block.name) && block.id !== toolUseId
+				&& (currentMessage === undefined || entry.message.id !== currentMessage)) {
+				earlierEdit = true; // an earlier edit: anything before it explained that one
+				break;
+			}
+		}
+		if (earlierEdit) {
+			break;
+		}
+	}
+	return thought ? { visible: false, text: thought } : undefined;
+}
+
+// Shows an explanation Claude only thought, in the chat right before its edit.
+function noteForChat(key, thought) {
+	const MAX = 600;
+	const text = thought.replace(/\s+/g, ' ').trim();
+	return `✎ ${key}: ${text.length > MAX ? `${text.slice(0, MAX - 1)}…` : text}`;
+}
+
+// What to do about the explanation before an edit: { deny: reason } sends the edit back to Claude,
+// { note } lets it through with the explanation shown in the chat, {} just lets it through.
+function checkExplanation(event, file, sessionId) {
+	const at = locate(file);
+	if (!EDIT_TOOLS.has(event.tool_name) || !at || !explainEditsEnabled()) {
+		return {};
+	}
+	const sessionFile = sessionId ? sessionPath(sessionId) : undefined;
+	const session = sessionFile ? readJson(sessionFile) : {};
+	const explanation = explanationBeforeEdit(event.transcript_path, event.tool_use_id);
+	if (explanation || (session.sentBack ?? 0) >= MAX_SENT_BACK) {
+		if (sessionFile && session.sentBack) {
+			session.sentBack = 0;
+			writeJson(sessionFile, session);
+		}
+		return explanation && !explanation.visible ? { note: noteForChat(at.key, explanation.text) } : {};
+	}
+	if (sessionFile) {
+		session.sentBack = (session.sentBack ?? 0) + 1;
+		writeJson(sessionFile, session);
+	}
+	const name = at.key;
+	return { deny: `Claude Inline Diff: this edit was not applied, because no explanation was written before it. `
+		+ `Anything in your thinking is hidden from the user and doesn't count. `
+		+ `Output a visible text message now, 1-3 short sentences saying what you're about to change in ${name} and why `
+		+ `(if it adds a variable, function or condition whose purpose isn't obvious, say what it's for), `
+		+ `then call the tool again with the same edit.` };
+}
 
 function snapshot(file, sessionId) {
 	const at = locate(file);
@@ -204,6 +329,27 @@ function forgetOldSessions() {
 	}
 }
 
+// ---- SessionStart ----
+
+const EXPLAIN_EDITS = `Claude Inline Diff is on in this project: the user reviews your file changes afterwards by reading this chat in order, like a story. So narrate your edits:
+- Right before each Edit, Write or MultiEdit call, write 1-3 short sentences as a visible text message in your reply, saying what you're about to change (in plain words, naming the file) and why: the goal of this particular change, not just the overall task.
+- When the change adds a variable, field, function or condition whose purpose isn't obvious, say what it holds or does and why it's needed. Add a tiny concrete example when that makes it clearer, e.g. "\`signature\` is the request we last sent, as JSON; if the next request has the same signature, we skip sending it again."
+- Your thinking doesn't count: it's hidden from the user. The explanation must be ordinary reply text, output right before the tool call.
+- Keep it brief and plain. Edits made together in one step can share one explanation. Put these explanations in the chat, not in code comments.
+An edit with no explanation before it is sent back to you to explain first.`;
+
+// The user's choice from the VS Code setting claudeInlineDiff.explainEditsInChat, written by the extension.
+function explainEditsEnabled() {
+	return readJson(path.join(claudeDir(), 'inline-diff', 'settings.json')).explainEdits !== false;
+}
+
+function sessionStart(cwd) {
+	if (!cwd || !findProjectRoot(path.join(cwd, '_')) || !explainEditsEnabled()) {
+		return undefined;
+	}
+	return { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: EXPLAIN_EDITS } };
+}
+
 // ---- git pre-commit ----
 
 function realpath(file) {
@@ -256,7 +402,12 @@ process.stdin.on('end', () => {
 	try {
 		const event = JSON.parse(input);
 		const sessionId = typeof event.session_id === 'string' ? event.session_id : undefined;
-		if (event.hook_event_name === 'Stop') {
+		if (event.hook_event_name === 'SessionStart') {
+			const output = sessionStart(typeof event.cwd === 'string' ? event.cwd : undefined);
+			if (output) {
+				process.stdout.write(JSON.stringify(output));
+			}
+		} else if (event.hook_event_name === 'Stop') {
 			if (sessionId) {
 				const message = summary(sessionId);
 				if (message) {
@@ -267,7 +418,19 @@ process.stdin.on('end', () => {
 		} else {
 			const filePath = event.tool_input && event.tool_input.file_path;
 			if (typeof filePath === 'string' && filePath) {
-				snapshot(path.resolve(event.cwd || process.cwd(), filePath), sessionId);
+				const file = path.resolve(event.cwd || process.cwd(), filePath);
+				const check = checkExplanation(event, file, sessionId);
+				if (check.deny) {
+					// Sent back unchanged, so no snapshot: the file isn't touched this time.
+					process.stdout.write(JSON.stringify({
+						hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: check.deny },
+					}));
+				} else {
+					snapshot(file, sessionId);
+					if (check.note) {
+						process.stdout.write(JSON.stringify({ systemMessage: check.note }));
+					}
+				}
 			}
 		}
 	} catch (err) {

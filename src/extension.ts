@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { acceptHunk, computeDiff, rejectHunk, type FileDiff, type Hunk } from './hunks';
-import { copyHookScript, isProjectSetUp, readBase, readEntries, recordOutcome, removeEntry, setUpProject, syncCommitGuard, writeBase, type Entry } from './store';
+import { copyHookScript, isProjectSetUp, readBase, readEntries, recordOutcome, removeEntry, setUpProject, syncCommitGuard, writeBase, writeHookSettings, type Entry } from './store';
 
 const BASE_SCHEME = 'claude-inline-diff-base';
 const DONT_ASK_KEY = 'claudeInlineDiff.dontAskSetup';
@@ -126,6 +126,17 @@ class Controller implements vscode.CodeLensProvider, vscode.TreeDataProvider<Ent
 			`Claude changed ${plural(files.length, 'file')} that you haven't reviewed yet${list}.`, 'Review', 'Later');
 		if (answer === 'Review') {
 			await this.openNextFile();
+		}
+	}
+
+	// Passes the settings the Claude Code hook needs to it.
+	syncHookSettings(): void {
+		try {
+			writeHookSettings({
+				explainEdits: vscode.workspace.getConfiguration('claudeInlineDiff').get<boolean>('explainEditsInChat', true),
+			});
+		} catch {
+			// The hook falls back to its defaults.
 		}
 	}
 
@@ -773,6 +784,9 @@ export function activate(context: vscode.ExtensionContext) {
 			if (e.affectsConfiguration('claudeInlineDiff.blockCommitsWithPendingChanges')) {
 				controller.syncCommitGuards();
 			}
+			if (e.affectsConfiguration('claudeInlineDiff.explainEditsInChat')) {
+				controller.syncHookSettings();
+			}
 		}),
 		vscode.workspace.onDidChangeTextDocument(e => {
 			if (e.document.uri.scheme === 'file' && controller.tracks(e.document.uri.fsPath)) {
@@ -791,6 +805,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	controller.watchRoots();
 	controller.refresh();
+	controller.syncHookSettings();
 	controller.offerSetUp();
 	controller.remindPending();
 

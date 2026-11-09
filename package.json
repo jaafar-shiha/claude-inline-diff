@@ -2,7 +2,7 @@
   "name": "claude-inline-diff",
   "displayName": "Claude Inline Diff",
   "description": "Review Claude Code's edits inline, Cursor-style: green added lines, red removed lines, Accept/Reject per change.",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "jaafar-shiha",
   "author": {
     "name": "Jaafar Shiha",
@@ -249,6 +249,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Stop `git commit` while a file you are committing still has Claude changes you haven't accepted or rejected. Adds a few marked lines to the project's .git/hooks/pre-commit; turning this off removes them. Skip once with `git commit --no-verify`."
+        },
+        "claudeInlineDiff.explainEditsInChat": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Ask Claude to explain each change (what it's about to do and why) in the chat right before making it, so the chat reads as an ordered story of the edits. Applies to Claude Code chats started afterwards in projects set up for review."
         }
       }
     },

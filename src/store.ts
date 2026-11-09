@@ -176,6 +176,15 @@ function writeJson(file: string, value: unknown): void {
 	fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n');
 }
 
+// Settings the hook reads outside VS Code (~/.claude/inline-diff/settings.json).
+export function writeHookSettings(settings: { explainEdits: boolean }): void {
+	const file = path.join(claudeDir(), 'inline-diff', 'settings.json');
+	const current = readJson(file);
+	if (current.explainEdits !== settings.explainEdits) {
+		writeJson(file, { ...current, ...settings });
+	}
+}
+
 export function isProjectSetUp(root: string): boolean {
 	return fs.existsSync(stateDir(root));
 }
@@ -210,6 +219,7 @@ function installGlobalHook(bundledScript: string): void {
 	for (const [event, group] of [
 		['PreToolUse', { matcher: 'Edit|Write|MultiEdit', hooks: [command] }],
 		['Stop', { hooks: [command] }],
+		['SessionStart', { hooks: [command] }],
 	] as const) {
 		settings.hooks[event] ??= [];
 		if (!JSON.stringify(settings.hooks[event]).includes(HOOK_FILE)) {

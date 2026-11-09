@@ -303,4 +303,65 @@ suite('editor integration', () => {
 		assert.strictEqual(fs.readFileSync(hookFile, 'utf8'), '#!/bin/sh\necho "the user\'s own check"\n');
 		await settings.update('blockCommitsWithPendingChanges', undefined, vscode.ConfigurationTarget.Workspace);
 	});
+
+	test('a new Claude chat in the project is asked to explain each change before making it, unless turned off', async () => {
+		const chatStarts = () => {
+			const out = execFileSync('node', [hook], { input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'story', cwd: root, source: 'startup' }) }).toString();
+			return out ? JSON.parse(out).hookSpecificOutput.additionalContext as string : undefined;
+		};
+		await vscode.commands.executeCommand('claudeInlineDiff.setUpHook');
+		const settings = JSON.parse(fs.readFileSync(path.join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json'), 'utf8'));
+		assert.ok(JSON.stringify(settings.hooks.SessionStart).includes('claude-inline-diff-snapshot.js'), 'the hook runs when a chat starts');
+		assert.match(chatStarts() ?? '', /Right before each Edit/);
+
+		const config = vscode.workspace.getConfiguration('claudeInlineDiff');
+		await config.update('explainEditsInChat', false, vscode.ConfigurationTarget.Workspace);
+		await waitFor('the hook to be told', () => (chatStarts() === undefined ? true : undefined));
+		await config.update('explainEditsInChat', undefined, vscode.ConfigurationTarget.Workspace);
+		await waitFor('the instruction to come back', () => chatStarts());
+	});
+
+	test('each edit must come after an explanation; one Claude only thought is shown in the chat', () => {
+		const file = path.join(root, 'lib', 'story.dart');
+		fs.writeFileSync(file, 'var a = 1;\n');
+		const transcript = path.join(os.tmpdir(), `story-${Date.now()}.jsonl`);
+		const say = (...entries: object[]) => fs.writeFileSync(transcript, entries.map(e => JSON.stringify(e)).join('\n') + '\n');
+		const prompt = { type: 'user', message: { role: 'user', content: 'Change a to 2' } };
+		const edit = (id: string, msg: string) => ({ type: 'assistant', message: { id: msg, content: [{ type: 'tool_use', id, name: 'Edit', input: { file_path: file } }] } });
+		const text = (msg: string, t: string) => ({ type: 'assistant', message: { id: msg, content: [{ type: 'text', text: t }] } });
+		const thinking = (msg: string, t: string) => ({ type: 'assistant', message: { id: msg, content: [{ type: 'thinking', thinking: t }] } });
+		const tryEdit = (id: string, sessionId = 'story-chat') => {
+			const out = execFileSync('node', [hook], { input: JSON.stringify({
+				hook_event_name: 'PreToolUse', session_id: sessionId, cwd: root, tool_name: 'Edit', tool_use_id: id,
+				transcript_path: transcript, tool_input: { file_path: file },
+			}) }).toString();
+			return out ? JSON.parse(out) : {};
+		};
+		const sentBack = (out: any) => out.hookSpecificOutput?.permissionDecision === 'deny';
+
+		// Explained in the reply: goes through quietly.
+		say(prompt, text('m1', 'Now I will change a to 2, because the counter starts at 2.'), edit('t1', 'm1'));
+		assert.deepStrictEqual(tryEdit('t1'), {});
+
+		// A second edit with nothing said since the first: sent back with a reason.
+		say(prompt, text('m1', 'Now I will change a to 2, because the counter starts at 2.'), edit('t1', 'm1'), edit('t2', 'm2'));
+		const out = tryEdit('t2');
+		assert.ok(sentBack(out));
+		assert.match(out.hookSpecificOutput.permissionDecisionReason, /what you're about to change in lib\/story\.dart and why/);
+
+		// Edits made together in one message share the explanation.
+		say(prompt, text('m1', 'Now I will rename a in two places, so it matches the API.'), edit('t1', 'm1'), edit('t3', 'm1'));
+		assert.deepStrictEqual(tryEdit('t3'), {});
+
+		// Explained only in thinking: goes through, and the explanation is shown in the chat.
+		say(prompt, thinking('m4', "I'm adding `signature`, the last request sent, so we skip sending the same one twice."), edit('t4', 'm4'));
+		assert.strictEqual(tryEdit('t4').systemMessage, "✎ lib/story.dart: I'm adding `signature`, the last request sent, so we skip sending the same one twice.");
+
+		// Never stuck: after two edits sent back in a row, the next goes through.
+		say(prompt, edit('t5', 'm5'));
+		assert.ok(sentBack(tryEdit('t5', 'stuck')));
+		assert.ok(sentBack(tryEdit('t5', 'stuck')));
+		assert.ok(!sentBack(tryEdit('t5', 'stuck')));
+		fs.rmSync(transcript, { force: true });
+	});
 });
